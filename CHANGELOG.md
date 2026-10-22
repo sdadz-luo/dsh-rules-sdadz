@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.1.10] — 2026-10-22
+
+### Fixed
+
+- Resolve the session directory safely: the plugin now reads `session.header.cwd` first and the `workingDirectory` service through `ctx.get()` (the direct `ctx.workingDirectory` property throws while the service is absent, which broke both `touch()` and `compose()`).
+- `touch()` falls back to the touched file's own project root when the session root is unknown or does not contain the file, so glob activation no longer depends on the session cwd being committed.
+- `compose()` prefers the project root recorded by the most recent touched file, so project-level rules load even when the session header carries no cwd.
+- Failures now leave a diagnostic line (`touch-root-failed`, `pre-step-error`) instead of only an invisible logger warning.
+## [0.1.7] — 2026-10-21
+
+### Fixed
+
+- Rules snapshots now carry the Session format V4 producer-owned source kind (`plugin:dsh-rules`) instead of the retired V3 wrapper (`kind: "plugin"` plus a `plugin` field). DSH 0.2.1-rc.2 persists format V4, whose message admission rejects `kind: "plugin"` with `format v4 message requires a producer-owned source kind`, so every injection failed the enclosing turn. The seed-from-log matcher and the duplicate check now key on the same kind.
+
 ## [0.1.6] — 2026-10-19
 
 ### Fixed

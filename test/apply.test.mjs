@@ -169,8 +169,7 @@ test("apply: injected rules message carries a one-line notice for the UI row", a
 		assert.equal(decision.messages.length, 1);
 		const message = decision.messages[0];
 		assert.equal(message.role, "user");
-		assert.equal(message.source.kind, "plugin");
-		assert.equal(message.source.plugin, "dsh-rules");
+		assert.equal(message.source.kind, "plugin:dsh-rules");
 		assert.equal(message.source.form, "notice");
 		assert.match(message.source.summary, /^Active rules: style$/);
 		assert.match(message.content[0].text, /Always-on rule\./);
@@ -256,7 +255,7 @@ test("apply: a resumed session reads its log through the current session API", a
 		const agent = fakeAgent(projectRoot, "resumed", [{
 			type: "user/message",
 			data: {
-				source: { kind: "plugin", plugin: "dsh-rules", form: "notice", summary: "Active rules: style" },
+				source: { kind: "plugin:dsh-rules", form: "notice", summary: "Active rules: style" },
 				content: [{ type: "text", text: "<rules>\nstale snapshot\n</rules>" }]
 			}
 		}]);
