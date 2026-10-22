@@ -131,3 +131,5 @@ git rebase upstream/main                # 冲突点预期在 source kind 与工�
 
 MIT，上游版权归 [rj-jiangyichen](https://github.com/rj-jiangyichen/dsh-rules)；
 本 fork 的修改同样以 MIT 发布。
+> 说明：本 fork 移除了上游的 .github/workflows/ci.yml（推送用的 PAT 无 workflow 权限）。
+ode --test 可本地跑全部 49 项。
