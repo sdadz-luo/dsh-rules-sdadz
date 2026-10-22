@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.1.11] — 2026-10-22
+
+### Changed
+
+- Remove the temporary load/injection diagnostics added while verifying the V4 adaptation. The runtime code is back to the same shape as 0.1.7 plus the cwd/project-root fixes.
 ## [0.1.10] — 2026-10-22
 
 ### Fixed
