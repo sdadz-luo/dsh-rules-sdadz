@@ -1,189 +1,133 @@
-# dsh-rules
+# dsh-rules（Session format V4 兼容 fork）
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![DSH Plugin topic](https://img.shields.io/badge/topic-dsh--plugin-blue)](https://github.com/topics/dsh-plugin)
+基于 [rj-jiangyichen/dsh-rules](https://github.com/rj-jiangyichen/dsh-rules) 的个人 fork，
+修复 **DSH 0.2.1（Session format V4）下规则注入失败**的问题，并修正会话工作目录解析。
 
-**English** | [中文](./README.zh.md)
+> Glob-activated rule prompts for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) —
+> Claude Code `rules.md` / `# Path:` 风格：规则声明 glob，模型**读或写**匹配文件时，规则正文以
+> `<rules>` 快照注入对话（快照取代旧快照）。
 
-Glob-activated rule prompts for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) — a Claude Code `rules.md` / `# Path:`-style mechanism. Each rule declares glob patterns; when the agent **reads or edits** a matching file, the rule activates and its content (any prompt or markdown document) is injected into the conversation as a superseding `<rules>` snapshot.
+当前版本：**0.1.11**　基线：上游 `c509688`（0.1.6）　依赖：DSH `0.2.1-rc.2` 实测通过
 
-> Works in **every DSH deployment**: desktop / web / tui / headless / custom profiles — nothing about this plugin is desktop-specific.
+## 为什么需要这个 fork
 
-## Contents
+上游 0.1.6 注入消息时用的是 **V3 时代的 source 包装**：
 
-- [Features](#features)
-- [How it works](#how-it-works)
-- [Installation](#installation)
-- [Rule format](#rule-format)
-- [Configuration](#configuration)
-- [Discoverability](#discoverability)
-- [Limitations](#limitations)
-- [Development](#development)
-- [License](#license)
-
-## Features
-
-- **Glob activation** — rules activate per file the agent touches: `**`, `*`, `?`, `{a,b}`, `[abc]`, and `!` negation (picomatch).
-- **Claude Code compatible** — plain rule files (`.dsh/rules/*.md`) *and* `# Path:` sections inside `CLAUDE.md` / `AGENTS.md`.
-- **Visible & durable** — active rules are injected as a user message the UI shows and the session log persists; each injection appears in the chat as a collapsible row (same chrome as tool-call rows) with a one-line notice — e.g. `dsh-rules · Active rules: typescript, docs` — expanding to the full rules text. Each snapshot supersedes earlier ones, so the model always sees the current set.
-- **Budget-bounded** — byte-budget rendering (32 KB default): low-priority rules are dropped first, then the last rule is truncated; content is escaped so it can never break out of the framing tags.
-- **Resume-friendly** — on session resume the last snapshot and its matched files are restored from the log, preventing duplicate injection.
-- **Per-session tracking** — every agent/session tracks its own touched files (subagents included); global rules (no `path:`) are always active.
-
-## How it works
-
-```
-workspace
-  .dsh/rules/*.md    ← rule definitions (frontmatter declares globs)
-  ~/.dsh/rules/*.md  ← user-level rules (optional)
-  CLAUDE.md          ← optional: # Path: sections (Claude Code compatible)
-
-agent reads/edits a file (fs/observed) → record per-session touched path
-  ↓ every step (agent/pre-step)
-match touched paths against globs → collect active rules → render a <rules> snapshot into the conversation
+```js
+source: { kind: "plugin", plugin: "dsh-rules", form: "notice", summary }
 ```
 
-- **Injection point**: an `agent/pre-step` waterfall listener appends a `<rules>`-framed user message; a new message is only appended when the active rule set or a rule's content changes. The matched-file list inside a snapshot is informational — a step that only adds matched files never re-sends the rule bodies.
-- **Discovery & caching**: rule sources are re-probed per step with version caching (`fs.stat().version`, or `mtimeMs:size` on the Node fallback) — edits to rule files take effect on the next step.
-- **Reads**: prefer the harness `fs` service (containment-aware); fall back to Node's filesystem when no `fs` service is mounted.
+而 DSH 0.2.1 持久化的是 **Session format V4**，其消息准入门禁
+（`@deepseek-ai/dsh-session-format-v3-to-v4` 的 `source()`）明确拒绝 `kind === "plugin"`：
 
-## Installation
+```
+format v4 message requires a producer-owned source kind
+```
 
-### Any DSH deployment (generic)
+后果不是"规则不生效"，而是**整轮请求失败**——消息由 agent loop 在插件 try/catch 之外追加。
+V4 的规范形态是 producer 自有 kind，第三方插件按迁移逻辑为 `plugin:<包名>`。
 
-Published on the npm registry — `dsh plugin` installs **and activates** the plugin in one step:
+## 与上游的差异
+
+| 方面 | 上游 0.1.6 | 本 fork 0.1.11 |
+|---|---|---|
+| 注入消息 source | `kind: "plugin"` + `plugin` 字段（V3，V4 拒绝） | `kind: "plugin:dsh-rules"`（V4 producer 自有 kind） |
+| 恢复会话时的判据 | 按 `kind === "plugin"` 匹配 | 按 `SOURCE_KIND` 匹配，兼容迁移后的日志 |
+| 会话工作目录 | `session.header.cwd ?? process.cwd()`，header 缺 cwd 时退化到宿主目录 | `header.cwd` → `ctx.get("workingDirectory")`（安全取值，不抛错）→ `process.cwd()` |
+| 项目根解析 | 只按会话 cwd 向上找标记 | 会话根不含该文件时，**从被读文件目录向上找项目根**兜底 |
+| 项目级规则加载 | 依赖会话 cwd | 优先使用"最近一次成功 touch 的文件所在根" |
+| 测试 | 49 项 | 49 项，夹具与断言跟进 V4 |
+
+## 安装（桌面版）
+
+桌面版 profile 用 `link:` / `file:` 指向源码目录时，**loader 不会加载该 bundle**（只认
+`node_modules` 里的真实目录）。因此必须打包后安装：
 
 ```powershell
-# Adjust the profile name: desktop / web / tui / headless
-dsh plugin --profile desktop add dsh-rules
+cd D:\project\dsh-plugins\dsh-rules
+npm pack
+
+$dsh = 'D:\DSH\resources\runtime\cli\bin\dsh.cmd'
+& $dsh plugin --profile desktop add "file:D:/project/dsh-plugins/dsh-rules/dsh-rules-0.1.11.tgz"
 ```
 
-The package declares `dsh.bundle.patch`, so the reconcile pass of `dsh plugin add` appends `dsh-rules` to the profile's `dsh.profile.bundles` layer list automatically — **no manual `cordis.patch.yml` edits are needed**. Restart DSH (restart the desktop app; restart the web/headless process) and the plugin loads with the next Cordis composition.
+然后**重启 DSH**。`dsh plugin add` 会把 `dsh-rules` 写进 `dsh.profile.bundles`；
+若某次安装失败，请检查该列表是否仍含 `dsh-rules`（`plugin remove` 会删掉它）。
 
-Updates: `dsh plugin --profile desktop update dsh-rules` (or remove + add).
-
-Installing from a local checkout (development):
+回滚到上游版：
 
 ```powershell
-# From the repo root — activates the bundle automatically, same as the registry install
-dsh plugin --profile desktop add .
+& $dsh plugin --profile desktop remove dsh-rules
+& $dsh plugin --profile desktop add 'dsh-rules@0.1.6'
 ```
 
-> ⚠️ pnpm splits `add` arguments on spaces, so a repository **path containing spaces** must be installed through a no-space junction (see below).
+## 规则格式
 
-### DSH Desktop (Windows) one-click script
+规则文件放两处：
 
-```powershell
-# 1. Clone this repository, then from the repo root:
-node scripts\install-desktop.mjs
-
-# 2. Restart DSH Desktop — the plugin loads with the next Cordis composition
-```
-
-The script creates a no-space junction to the repo and runs the desktop app's own `dsh plugin add` through it (pnpm splits `add` arguments on spaces, so a repository path containing spaces must go through the junction):
-
-```powershell
-# 0) Create a no-space junction to the repository (needed when the path contains spaces)
-mklink /J "C:\code_repos\dsh-rules" "C:\code_repos\dsh rules plugin"
-
-# 1) Install via the desktop's own dsh command (through the junction path)
-& "C:\Program Files\DSH Desktop\DSH Desktop.exe" --expose-internals `
-  "C:\Program Files\DSH Desktop\resources\app.asar.unpacked\lib\desktop-cli.js" `
-  plugin --profile desktop add "C:\code_repos\dsh-rules"
-```
-
-Per-profile configuration (optional): the plugin loads with its code defaults; to customize, override the entry's `config` in `<profile>/cordis.patch.yml`:
-
-```yaml
-- id: dsh-rules
-  name: dsh-rules
-  config:
-    includeClaudeSections: true
-    projectRootMarkers: [".git", ".dsh"]
-```
-
-**Uninstall**: `node scripts\install-desktop.mjs --uninstall` (or `dsh plugin --profile desktop remove dsh-rules`), then restart the app. Installing/uninstalling never touches the DSH installation directory (`resources\app.asar.unpacked`) — only profile configuration, fully reversible.
-
-## Rule format
-
-### Source A: rule files (`.dsh/rules/*.md` and `~/.dsh/rules/*.md`)
+- 用户级：`~/.dsh/rules/*.md`
+- 项目级：`<项目根>/.dsh/rules/*.md`
 
 ```markdown
 ---
 path:
-  - "src/**/*.ts"
-  - "!src/**/*.test.ts"
+  - "**/*.c"
+  - "!**/third_party/**"
 ---
-Rule body (markdown, injected verbatim when active — any prompt content works)
+
+# 规则正文（任意 markdown / 提示词）
 ```
 
-| Frontmatter field | Description |
-| --- | --- |
-| `path` | String or list of globs, relative to the project root, `/` separators; `!` prefixes mark exclusion patterns. **Absent or empty = always-active global rule** (active for any session in the workspace). |
-| `name` | Optional; rule identity (used for same-name deduplication). Defaults to the file name without `.md`. |
+| 字段 | 说明 |
+|---|---|
+| `path`（**单数**） | 字符串或字符串数组，相对项目根的 POSIX glob；`!` 前缀为排除；**缺省或为空 = 常驻规则** |
+| `name` | 可选，规则标识；默认取文件名（去 `.md`） |
 
-### Source B: `# Path:` sections (requires `includeClaudeSections: true`)
+- 优先级：项目级 `100` > 用户级 `200` > `AGENTS.md`/`CLAUDE.md` 的 `# Path:` 段落 `300`；同名取高优先级
+- 注入形态：`<rules>` 快照作为 user 消息进入会话，UI 中是可折叠行；每条快照取代旧快照
+- 只有项目根内的文件能触发；读、写、编辑都会记录
 
-Parses `# Path: <globs…>` headings out of `AGENTS.md` / `CLAUDE.md` (including `.local.md` variants and `~/.dsh/AGENTS.md`):
+## 配置
 
-```markdown
-# Project notes (content before the first heading is handled by the built-in agent-instructions baseline, not by this plugin)
+在目标 profile 的 `cordis.patch.yml` 里按 id 覆盖：
 
-# Path: src/**/*.ts, scripts/**
-This section activates only when a file under src/**/*.ts or scripts/ is touched
+```yaml
+- id: dsh-rules
+  config:
+    maxBytes: 12288              # 单次注入字节上限（默认 32768）
+    projectRootMarkers: [".git"]  # 项目根标记，可加 ".dsh"
+    includeUserRules: true        # 读取 ~/.dsh/rules
+    includeClaudeSections: false  # 解析 AGENTS.md 的 # Path: 段落
 ```
 
-- Each `# Path:` heading starts a rule that runs until the next heading (or end of file).
-- Globs may be comma- or space-separated.
-- Content before the first `# Path:` heading is intentionally **not** injected by this plugin — DSH's built-in `agent-instructions` already injects the full AGENTS.md/CLAUDE.md baseline.
+## 已知限制
 
-### Precedence & deduplication
+- **只有项目根内的文件能触发**；跨盘读取时依赖"按文件位置找根"的兜底
+- `touched` 集合按会话保留 512 条（FIFO），超长会话可能淘汰较早的匹配
+- 注入是 user 角色消息：**克隆的第三方仓库若带 `.dsh/rules/*.md`，会被执行**——陌生仓库先看一眼
+- 上游使用的 `session.snapshotEvents()` 在 DSH 中已标记弃用，0.3 升级时需跟进
+- 同一会话混读多个工程时，项目级规则按"最近一次 touch 的根"加载
 
-Project rules (rank 100) > user rules (rank 200) > `# Path:` sections (rank 300). Same-name rules keep the highest-priority entry; rendering order is (rank, name) — deterministic across steps.
-
-## Configuration
-
-| Option | Default | Description |
-| --- | --- | --- |
-| `dshHome` | `$DSH_HOME` / `~/.dsh` | Root for user rules and `~/.dsh/AGENTS.md` |
-| `projectRootMarkers` | `[".git"]` | Marker files/dirs used to find the project root by walking up |
-| `ruleDirNames` | `[".dsh/rules"]` | Rule directories inside the project (relative to the project root, multiple allowed) |
-| `includeUserRules` | `true` | Enable `~/.dsh/rules/*.md` |
-| `includeClaudeSections` | `false` | Parse `# Path:` sections |
-| `instructionFileCandidates` | `["AGENTS.md", "CLAUDE.md"]` | Candidate file names for `# Path:` sections |
-| `localInstructionFileCandidates` | `["AGENTS.local.md", "CLAUDE.local.md"]` | Per-directory candidate file names |
-| `maxBytes` | `32768` | Per-injection render budget (UTF-8 bytes); `<= 0` disables the plugin |
-| `maxSourceBytes` | `1048576` | Per-rule source size cap; larger files are skipped |
-| `maxTouchedPaths` | `512` | Touched-path cap per session (FIFO eviction) |
-
-## Discoverability
-
-This plugin is discoverable through the GitHub [`dsh-plugin`](https://github.com/topics/dsh-plugin) topic — the channel recommended by the [DeepSeek Harness README](https://github.com/deepseek-ai/deepseek-harness) ("Community and support": *Add the `dsh-plugin` topic to your plugin repository for discoverability*). Community plugin lists and marketplaces (e.g. awesome-dsh-plugin, dsh-plugin-marketplace) scan that topic to pick up new plugins; the tag can be viewed/edited in the repository's About section.
-
-## Limitations
-
-- Only files **inside the project root** can activate rules; reads outside the root never trigger (avoids `../` false positives).
-- The touched-path set is in-memory: after resuming a session, rules re-activate as the agent re-reads files (the previously matched list is restored from the log).
-- Deployments with `includeRuntimeContext: false` are unaffected — this plugin injects its own message and does not depend on the runtime-context snapshot.
-- Rules are injected as "superseding snapshot" messages; the session log retains historical snapshots, but each snapshot is the complete current set and the model follows the latest one.
-- A snapshot's `matched files` list is a record of the moment it was rendered: files matched later do not re-send the rules, so that list can lag behind the session. The active set is always the one in the latest snapshot.
-
-## Development
+## 开发与测试
 
 ```powershell
-pnpm install
-pnpm test        # node --test: parsing / glob matching / precedence / budget / determinism / fs fallback
+cd D:\project\dsh-plugins\dsh-rules
+npm install --ignore-scripts --no-audit --no-fund   # 仅测试需要
+node --test                                          # 49 项
+Remove-Item node_modules -Recurse -Force             # 测完必须删，见 AGENTS.md
 ```
 
-Layout:
+## 上游同步
 
-- `lib/index.js` — plugin entry (`name` / `Config` / `apply`): `fs/observed` touch tracking, `agent/pre-step` injection, `agent/disposed` cleanup.
-- `lib/rules.js` — pure logic: frontmatter and `# Path:` parsing, glob compilation/matching, precedence merging, budget rendering.
-- `lib/fs.js` — versioned discovery/reads: harness `fs` service first, Node fallback.
-- `test/rules.test.mjs` — unit tests.
-- `examples/.dsh/rules/` — sample rules (copy into your project to get started).
-- `fixtures/demo-project/` — a ready-made project for trying the plugin out.
+```powershell
+git fetch origin                      # origin = 上游仓库
+git log --oneline origin/main -5
+git rebase origin/main                # 冲突点预期在 source kind 与工作目录解析
+```
+
+上游若自行适配 V4，本 fork 的 `SOURCE_KIND` 改动可直接丢弃，回到 npm 版本。
 
 ## License
 
-[MIT](LICENSE)
+MIT，上游版权归 [rj-jiangyichen](https://github.com/rj-jiangyichen/dsh-rules)；
+本 fork 的修改同样以 MIT 发布。

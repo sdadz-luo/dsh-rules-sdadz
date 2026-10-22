@@ -9,3 +9,6 @@ node_modules/
 
 # IDE
 .idea/
+
+# npm lockfile (repo uses pnpm)
+package-lock.json
