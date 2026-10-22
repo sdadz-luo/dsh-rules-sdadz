@@ -120,9 +120,9 @@ Remove-Item node_modules -Recurse -Force             # 测完必须删，见 AGE
 ## 上游同步
 
 ```powershell
-git fetch origin                      # origin = 上游仓库
-git log --oneline origin/main -5
-git rebase origin/main                # 冲突点预期在 source kind 与工作目录解析
+git fetch upstream                     # upstream = 上游仓库
+git log --oneline upstream/main -5
+git rebase upstream/main                # 冲突点预期在 source kind 与工作目录解析
 ```
 
 上游若自行适配 V4，本 fork 的 `SOURCE_KIND` 改动可直接丢弃，回到 npm 版本。
